@@ -6,6 +6,14 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+# --- HARDCODED ABSOLUTE PATHS (Eliminates empty path bugs) ---
+BASE_DIR = r"E:\FINALYEAR_PROJECT_UI"
+DATA_PATH = os.path.join(BASE_DIR, "data", "model_data.json")
+COMMAND_PATH = os.path.join(BASE_DIR, "data", "revit_command.json")
+STATUS_PATH = os.path.join(BASE_DIR, "data", "revit_status.json")
+
+# Ensure the data directory exists on startup
+os.makedirs(os.path.join(BASE_DIR, "data"), exist_ok=True)
 # Ensure root folder is always in sys.path
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT_DIR not in sys.path:
@@ -54,12 +62,19 @@ COMMAND_PATH = os.path.join(ROOT_DIR, "data", "revit_command.json")
 STATUS_PATH = os.path.join(ROOT_DIR, "data", "revit_status.json")
 # --- Helper: Safe File Dispatcher for Revit Bridge ---
 def send_revit_command(action_type: str, data_payload: dict):
-    os.makedirs(os.path.dirname(COMMAND_PATH), exist_ok=True)
-    command = {"action": action_type, "data": data_payload}
-    with open(COMMAND_PATH, "w", encoding="utf-8") as f:
-        json.dump(command, f, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
+    target_file = r"E:\FINALYEAR_PROJECT_UI\data\revit_command.json"
+    try:
+        os.makedirs(os.path.dirname(target_file), exist_ok=True)
+        command = {
+            "action": action_type,
+            "data": data_payload
+        }
+        with open(target_file, "w", encoding="utf-8") as f:
+            json.dump(command, f, indent=2)
+            
+        st.sidebar.success(f"🚀 Sent `{action_type}` to Revit!")
+    except Exception as e:
+        st.sidebar.error(f"❌ Failed writing command: {e}")
 
 
 def compute_cost_color(val: float, min_val: float, max_val: float) -> list:
