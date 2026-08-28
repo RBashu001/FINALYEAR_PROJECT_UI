@@ -1,21 +1,23 @@
 import os
 import sys
 import json
+from pathlib import Path
 from datetime import datetime
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# --- HARDCODED ABSOLUTE PATHS (Eliminates empty path bugs) ---
-BASE_DIR = r"E:\FINALYEAR_PROJECT_UI"
-DATA_PATH = os.path.join(BASE_DIR, "data", "model_data.json")
-COMMAND_PATH = os.path.join(BASE_DIR, "data", "revit_command.json")
-STATUS_PATH = os.path.join(BASE_DIR, "data", "revit_status.json")
+# --- 1. Fail-Safe Path Resolution ---
+CURRENT_DIR = Path(__file__).resolve().parent
+DATA_DIR = CURRENT_DIR / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# Ensure the data directory exists on startup
-os.makedirs(os.path.join(BASE_DIR, "data"), exist_ok=True)
+DATA_PATH = str(DATA_DIR / "model_data.json")
+COMMAND_PATH = str(DATA_DIR / "revit_command.json")
+STATUS_PATH = str(DATA_DIR / "revit_status.json")
+
 # Ensure root folder is always in sys.path
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = str(CURRENT_DIR)
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
@@ -36,42 +38,20 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-# --- IMMEDIATE DIAGNOSTIC TEST (Place at top of app.py) ---
-st.title("BIM System Diagnostic")
 
-HARDCODED_CMD_PATH = r"E:\FINALYEAR_PROJECT_UI\data\revit_command.json"
 
-if st.button("🔴 FORCE WRITE TEST FILE"):
-    try:
-        os.makedirs(os.path.dirname(HARDCODED_CMD_PATH), exist_ok=True)
-        test_payload = {
-            "action": "HEATMAP",
-            "data": {
-                "wall_overrides": [
-                    {"wall_id": "12345", "rgb": [255, 0, 0]}
-                ]
-            }
-        }
-        with open(HARDCODED_CMD_PATH, "w", encoding="utf-8") as f:
-            json.dump(test_payload, f, indent=2)
-        st.success(f"✅ SUCCESS! File written to: {HARDCODED_CMD_PATH}")
-    except Exception as e:
-        st.error(f"❌ WRITE FAILED: {e}")
-DATA_PATH = os.path.join(ROOT_DIR, "data", "model_data.json")
-COMMAND_PATH = os.path.join(ROOT_DIR, "data", "revit_command.json")
-STATUS_PATH = os.path.join(ROOT_DIR, "data", "revit_status.json")
 # --- Helper: Safe File Dispatcher for Revit Bridge ---
 def send_revit_command(action_type: str, data_payload: dict):
-    target_file = r"E:\FINALYEAR_PROJECT_UI\data\revit_command.json"
     try:
-        os.makedirs(os.path.dirname(target_file), exist_ok=True)
+        cmd_file = Path(COMMAND_PATH)
+        cmd_file.parent.mkdir(parents=True, exist_ok=True)
         command = {
             "action": action_type,
             "data": data_payload
         }
-        with open(target_file, "w", encoding="utf-8") as f:
+        with open(cmd_file, "w", encoding="utf-8") as f:
             json.dump(command, f, indent=2)
-            
+
         st.sidebar.success(f"🚀 Sent `{action_type}` to Revit!")
     except Exception as e:
         st.sidebar.error(f"❌ Failed writing command: {e}")
@@ -105,7 +85,7 @@ with st.sidebar:
 
     active_json_path = None
     if uploaded_file is not None:
-        active_json_path = os.path.join(ROOT_DIR, "data", "temp_uploaded.json")
+        active_json_path = str(DATA_DIR / "temp_uploaded.json")
         with open(active_json_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         st.success("⚡ Using uploaded JSON file.")
@@ -164,7 +144,8 @@ with st.sidebar:
     btn_heatmap = col_r1.button("🔥 3D Heatmap")
     btn_reset = col_r2.button("🧹 Reset View")
     btn_push_params = st.button("📝 Push Quantities to Revit")
-# --- STATUS TRACKER ---
+
+    # --- Live Revit Status Monitor ---
     st.markdown("---")
     st.subheader("📡 Revit Live Status")
 
@@ -186,6 +167,7 @@ with st.sidebar:
             pass
     else:
         st.caption("⏳ Waiting for Revit execution...")
+
 
 # --- Calculation & View Execution ---
 if active_json_path:
@@ -234,7 +216,7 @@ if active_json_path:
         w_sand_cost = (w.get("brick_mortar_sand_m3", 0.0) + w.get("plaster_sand_m3", 0.0)) * rate_sand
         w_labor_brick = w.get("volume_m3", 0.0) * rate_labor_brickwork
         w_labor_plaster = w.get("plaster_area_m2", 0.0) * rate_labor_plaster
-        
+
         w["total_wall_cost"] = round(w_bricks_cost + w_cement_cost + w_sand_cost + w_labor_brick + w_labor_plaster, 2)
 
     # --- Trigger Revit Remote Actions ---
@@ -249,12 +231,10 @@ if active_json_path:
             for w in wall_details
         ]
         send_revit_command("HEATMAP", {"wall_overrides": overrides})
-        st.sidebar.success(f"🚀 Heatmap queued for {len(overrides)} walls!")
 
     if btn_reset:
         all_ids = [str(w.get("wall_id") or w.get("id")) for w in wall_details]
         send_revit_command("RESET_VIEW", {"wall_ids": all_ids})
-        st.sidebar.info("🧹 Reset command sent to Revit!")
 
     if btn_push_params:
         records = [
@@ -267,7 +247,6 @@ if active_json_path:
             for w in wall_details
         ]
         send_revit_command("WRITE_PARAMETERS", {"wall_records": records})
-        st.sidebar.success(f"📝 Quantities queued for {len(records)} walls!")
 
     # --- Main Dashboard Header ---
     st.title("🏗️ BIM Real-Time Quantity & Cost Estimator")
@@ -401,7 +380,6 @@ if active_json_path:
             "plaster_sand_m3": "{:,.3f}",
             "total_wall_cost": "₹{:,.2f}",
         }
-        # Only format columns that exist in the dataframe
         valid_formats = {col: fmt for col, fmt in format_dict.items() if col in df_walls.columns}
         st.dataframe(
             df_walls.style.format(valid_formats),
