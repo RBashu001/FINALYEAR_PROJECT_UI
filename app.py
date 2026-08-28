@@ -28,6 +28,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+python -m streamlit run your_script.py
 
 DATA_PATH = os.path.join(ROOT_DIR, "data", "model_data.json")
 COMMAND_PATH = os.path.join(ROOT_DIR, "data", "revit_command.json")
