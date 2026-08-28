@@ -28,7 +28,27 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+# --- IMMEDIATE DIAGNOSTIC TEST (Place at top of app.py) ---
+st.title("BIM System Diagnostic")
 
+HARDCODED_CMD_PATH = r"E:\FINALYEAR_PROJECT_UI\data\revit_command.json"
+
+if st.button("🔴 FORCE WRITE TEST FILE"):
+    try:
+        os.makedirs(os.path.dirname(HARDCODED_CMD_PATH), exist_ok=True)
+        test_payload = {
+            "action": "HEATMAP",
+            "data": {
+                "wall_overrides": [
+                    {"wall_id": "12345", "rgb": [255, 0, 0]}
+                ]
+            }
+        }
+        with open(HARDCODED_CMD_PATH, "w", encoding="utf-8") as f:
+            json.dump(test_payload, f, indent=2)
+        st.success(f"✅ SUCCESS! File written to: {HARDCODED_CMD_PATH}")
+    except Exception as e:
+        st.error(f"❌ WRITE FAILED: {e}")
 DATA_PATH = os.path.join(ROOT_DIR, "data", "model_data.json")
 COMMAND_PATH = os.path.join(ROOT_DIR, "data", "revit_command.json")
 STATUS_PATH = os.path.join(ROOT_DIR, "data", "revit_status.json")
