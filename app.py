@@ -4,7 +4,163 @@ from datetime import datetime
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import os
+import json
 
+
+# Path configuration
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+from engine.models import (
+    BrickSpec,
+    MixRatio,
+    VolumeConversionFactors,
+    MaterialRates,
+    ProductivityRates,
+    EngineConfig,
+)
+from engine.main import run_engine
+
+DATA_PATH = os.path.join(ROOT_DIR, "data", "model_data.json")
+COMMAND_PATH = os.path.join(ROOT_DIR, "data", "revit_command.json")
+
+# --- Helper: Revit Command Generator ---
+def send_revit_command(action_type: str, data_payload: dict):
+    os.makedirs(os.path.dirname(COMMAND_PATH), exist_ok=True)
+    command = {"action": action_type, "data": data_payload}
+    with open(COMMAND_PATH, "w", encoding="utf-8") as f:
+        json.dump(command, f, indent=2)
+
+
+def compute_cost_color(val: float, min_val: float, max_val: float) -> list:
+    """Returns RGB [R, G, B] from Green (low cost) to Red (high cost)."""
+    if max_val == min_val:
+        return [0, 255, 0]
+    norm = max(0.0, min(1.0, (val - min_val) / (max_val - min_val)))
+    r = int(255 * norm)
+    g = int(255 * (1.0 - norm))
+    return [r, g, 0]
+
+
+st.set_page_config(page_title="BIM Cost Estimator & Revit Controller", layout="wide")
+
+# --- Sidebar Inputs ---
+with st.sidebar:
+    st.header("⚙️ Project Controls")
+    
+    # Material presets
+    brick_type = st.selectbox("Brick Type", ["Clay Brick", "Fly Ash Brick", "Concrete Block"])
+    b_len = st.number_input("Brick Length (mm)", value=190.0)
+    b_wid = st.number_input("Brick Width (mm)", value=90.0)
+    b_hgt = st.number_input("Brick Height (mm)", value=90.0)
+    mortar_joint = st.number_input("Mortar Joint (mm)", value=10.0)
+    
+    st.markdown("---")
+    st.subheader("💰 Material Rates (₹)")
+    rate_brick = st.number_input("Brick Rate (₹/unit)", value=8.0)
+    rate_cement = st.number_input("Cement Rate (₹/bag)", value=350.0)
+    rate_sand = st.number_input("Sand Rate (₹/m³)", value=1800.0)
+    rate_labor_brick = st.number_input("Masonry Labor (₹/m³)", value=500.0)
+    rate_labor_plaster = st.number_input("Plaster Labor (₹/m²)", value=120.0)
+
+    st.markdown("---")
+    st.subheader("🕹️ Revit Remote Controls")
+    
+    col_r1, col_r2 = st.columns(2)
+    btn_heatmap = col_r1.button("🔥 3D Heatmap")
+    btn_reset = col_r2.button("🧹 Clear Overrides")
+    btn_push_params = st.button("📝 Push Quantities to Wall Parameters")
+
+# --- Engine Calculation ---
+if os.path.exists(DATA_PATH):
+    config = EngineConfig(
+        brick_spec=BrickSpec(
+            brick_type=brick_type.lower().replace(" ", "_"),
+            length=b_len / 1000.0,
+            width=b_wid / 1000.0,
+            height=b_hgt / 1000.0,
+            mortar_thickness=mortar_joint / 1000.0,
+        ),
+        brick_mortar_mix=MixRatio.from_string("1:6"),
+        plaster_mix=MixRatio.from_string("1:4"),
+        plaster_thickness=0.012,
+        conversion_factors=VolumeConversionFactors(dry_volume_factor=1.33, cement_bag_volume_m3=0.0347),
+        rates=MaterialRates(
+            cement_rate_per_bag=rate_cement,
+            sand_rate_per_m3=rate_sand,
+            brick_rate_per_unit=rate_brick,
+            labor_rate_brickwork_per_m3=rate_labor_brick,
+            labor_rate_plaster_per_m2=rate_labor_plaster,
+        ),
+        productivity=ProductivityRates(brickwork_m3_per_day=1.5, plaster_m2_per_day=15.0),
+    )
+
+    results = run_engine(DATA_PATH, config)
+    summary = results["summary"]
+    wall_details = results["wall_details"]
+
+    # Compute individual wall costs for heatmap
+    for w in wall_details:
+        w_cost = (
+            (w["num_bricks"] * rate_brick) +
+            ((w["brick_mortar_cement_bags"] + w["plaster_cement_bags"]) * rate_cement) +
+            ((w["brick_mortar_sand_m3"] + w["plaster_sand_m3"]) * rate_sand) +
+            (w["volume_m3"] * rate_labor_brick) +
+            (w["plaster_area_m2"] * rate_labor_plaster)
+        )
+        w["total_wall_cost"] = round(w_cost, 2)
+
+    # --- Revit Action Triggers ---
+    if btn_heatmap:
+        all_costs = [w["total_wall_cost"] for w in wall_details]
+        min_c, max_c = min(all_costs), max(all_costs)
+        
+        overrides = [
+            {
+                "wall_id": str(w["wall_id"]),
+                "rgb": compute_cost_color(w["total_wall_cost"], min_c, max_c)
+            }
+            for w in wall_details
+        ]
+        send_revit_command("HEATMAP", {"wall_overrides": overrides})
+        st.sidebar.success("🚀 Heatmap command sent to Revit!")
+
+    if btn_reset:
+        send_revit_command("RESET_VIEW", {})
+        st.sidebar.info("🧹 Reset command sent to Revit!")
+
+    if btn_push_params:
+        records = [
+            {
+                "wall_id": str(w["wall_id"]),
+                "cost": w["total_wall_cost"],
+                "num_bricks": w["num_bricks"],
+                "plaster_m2": w["plaster_area_m2"]
+            }
+            for w in wall_details
+        ]
+        send_revit_command("WRITE_PARAMETERS", {"wall_records": records})
+        st.sidebar.success("📝 Pushed parameters to all Revit walls!")
+
+    # --- Dashboard View ---
+    st.title("🏗️ BIM Real-Time Estimator & Revit Controller")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Cost", f"₹{summary['cost']:,.2f}")
+    c2.metric("Total Duration", f"{summary['time_days']} Days")
+    c3.metric("Total Bricks", f"{summary['total_bricks']:,} units")
+    c4.metric("Cement Required", f"{summary['cement_bags']:,.1f} Bags")
+
+    st.markdown("---")
+    
+    st.subheader("Wall Cost Audit Table")
+    df_w = pd.DataFrame(wall_details)
+    st.dataframe(df_w[["wall_id", "volume_m3", "plaster_area_m2", "num_bricks", "total_wall_cost"]], use_container_width=True)
+
+else:
+    st.warning("Awaiting `model_data.json` inside the `data/` folder.")
 # Ensure root folder is always in sys.path
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT_DIR not in sys.path:
