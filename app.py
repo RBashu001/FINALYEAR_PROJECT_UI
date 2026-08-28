@@ -7,19 +7,18 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# --- 1. Fail-Safe Path Resolution ---
-CURRENT_DIR = Path(__file__).resolve().parent
-DATA_DIR = CURRENT_DIR / "data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+# --- 1. Path Definitions & Directory Setup ---
+BASE_DIR = r"E:\FINALYEAR_PROJECT_UI"
+DATA_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
 
-DATA_PATH = str(DATA_DIR / "model_data.json")
-COMMAND_PATH = str(DATA_DIR / "revit_command.json")
-STATUS_PATH = str(DATA_DIR / "revit_status.json")
+DATA_PATH = os.path.join(DATA_DIR, "model_data.json")
+COMMAND_PATH = os.path.join(DATA_DIR, "revit_command.json")
+STATUS_PATH = os.path.join(DATA_DIR, "revit_status.json")
 
-# Ensure root folder is always in sys.path
-ROOT_DIR = str(CURRENT_DIR)
-if ROOT_DIR not in sys.path:
-    sys.path.insert(0, ROOT_DIR)
+# Ensure base directory is in Python module search path
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 
 from engine.models import (
     BrickSpec,
@@ -31,34 +30,34 @@ from engine.models import (
 )
 from engine.main import run_engine
 
-# --- Page Layout Configuration ---
+# --- 2. Page Configuration ---
 st.set_page_config(
-    page_title="BIM Estimation & Revit Controller",
+    page_title="BIM Cost Estimator & Revit Controller",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 
-# --- Helper: Safe File Dispatcher for Revit Bridge ---
-def send_revit_command(action_type: str, data_payload: dict):
+# --- 3. Revit Bridge Helper Functions ---
+def send_revit_command(action_type: str, data_payload: dict) -> bool:
+    """Forces an immediate OS write of revit_command.json."""
     try:
-        cmd_file = Path(COMMAND_PATH)
-        cmd_file.parent.mkdir(parents=True, exist_ok=True)
-        command = {
-            "action": action_type,
-            "data": data_payload
-        }
-        with open(cmd_file, "w", encoding="utf-8") as f:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        command = {"action": action_type, "data": data_payload}
+        with open(COMMAND_PATH, "w", encoding="utf-8") as f:
             json.dump(command, f, indent=2)
-
+            f.flush()
+            os.fsync(f.fileno())
         st.sidebar.success(f"🚀 Sent `{action_type}` to Revit!")
+        return True
     except Exception as e:
-        st.sidebar.error(f"❌ Failed writing command: {e}")
+        st.sidebar.error(f"❌ Command Write Error: {e}")
+        return False
 
 
 def compute_cost_color(val: float, min_val: float, max_val: float) -> list:
-    """Returns RGB [R, G, B] normalized from Green (low cost) to Red (high cost)."""
+    """Calculates an [R, G, B] gradient from Green (lowest cost) to Red (highest cost)."""
     if max_val <= min_val:
         return [0, 255, 0]
     norm = max(0.0, min(1.0, (val - min_val) / (max_val - min_val)))
@@ -67,7 +66,7 @@ def compute_cost_color(val: float, min_val: float, max_val: float) -> list:
     return [r, g, 0]
 
 
-# --- Preset Configurations ---
+# --- 4. Material Presets ---
 BRICK_PRESETS = {
     "Modular Clay Brick": {"length": 190.0, "width": 90.0, "height": 90.0, "rate": 8.0},
     "Fly Ash Brick": {"length": 230.0, "width": 110.0, "height": 70.0, "rate": 6.5},
@@ -75,26 +74,26 @@ BRICK_PRESETS = {
     "Custom Brick / Block": {"length": 230.0, "width": 115.0, "height": 75.0, "rate": 9.0},
 }
 
-# --- Sidebar: Dynamic Input Panel ---
+# --- 5. Sidebar Controls & Inputs ---
 with st.sidebar:
     st.header("⚙️ Model & Material Controls")
 
-    # 1. BIM Model Synchronization
+    # 1. Model Sync
     st.subheader("1. BIM Model Sync")
     uploaded_file = st.file_uploader("Upload model_data.json (Override)", type=["json"])
 
     active_json_path = None
     if uploaded_file is not None:
-        active_json_path = str(DATA_DIR / "temp_uploaded.json")
+        active_json_path = os.path.join(DATA_DIR, "temp_uploaded.json")
         with open(active_json_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         st.success("⚡ Using uploaded JSON file.")
     elif os.path.exists(DATA_PATH):
         active_json_path = DATA_PATH
         last_modified = datetime.fromtimestamp(os.path.getmtime(DATA_PATH)).strftime("%Y-%m-%d %H:%M:%S")
-        st.caption(f"📁 Linked: `data/model_data.json`\n\n🕒 Exported: `{last_modified}`")
+        st.caption(f"📁 Linked: `{DATA_PATH}`\n\n🕒 Last Exported: `{last_modified}`")
     else:
-        st.error("No `model_data.json` found in `data/` folder.")
+        st.error(f"❌ `model_data.json` not found in `{DATA_DIR}`.")
 
     st.markdown("---")
 
@@ -130,7 +129,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # 5. Productivity & Bulking Factors
+    # 5. Productivity Rates & Bulking Factor
     st.subheader("5. Productivity & Bulking")
     prod_brickwork = st.number_input("Brickwork Output (m³/day)", min_value=0.2, value=1.5, step=0.1)
     prod_plaster = st.number_input("Plastering Output (m²/day)", min_value=1.0, value=15.0, step=1.0)
@@ -138,17 +137,16 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # 6. Remote Revit Controls
+    # 6. Revit Remote Buttons
     st.subheader("6. 🕹️ Revit Remote Controls")
     col_r1, col_r2 = st.columns(2)
     btn_heatmap = col_r1.button("🔥 3D Heatmap")
     btn_reset = col_r2.button("🧹 Reset View")
     btn_push_params = st.button("📝 Push Quantities to Revit")
 
-    # --- Live Revit Status Monitor ---
+    # 7. Live Revit Execution Status
     st.markdown("---")
     st.subheader("📡 Revit Live Status")
-
     if os.path.exists(STATUS_PATH):
         try:
             with open(STATUS_PATH, "r", encoding="utf-8") as f:
@@ -159,17 +157,17 @@ with st.sidebar:
                     f"✅ **Revit Synced ({status_data.get('timestamp')})**\n\n"
                     f"- **Action:** `{status_data.get('action')}`\n"
                     f"- **View:** `{status_data.get('view_name')}`\n"
-                    f"- **Elements Updated:** `{status_data.get('elements_affected')}` walls"
+                    f"- **Elements Affected:** `{status_data.get('elements_affected')}` walls"
                 )
             else:
-                st.error(f"❌ Revit Error: {status_data.get('message')}")
+                st.error(f"❌ Revit Execution Error: {status_data.get('message')}")
         except Exception:
             pass
     else:
-        st.caption("⏳ Waiting for Revit execution...")
+        st.caption("⏳ Waiting for Revit execution response...")
 
 
-# --- Calculation & View Execution ---
+# --- 6. Calculation Engine & View Rendering ---
 if active_json_path:
     config = EngineConfig(
         brick_spec=BrickSpec(
@@ -206,10 +204,10 @@ if active_json_path:
         time_bd = results["time_breakdown"]
         wall_details = results["wall_details"]
     except Exception as e:
-        st.error(f"Calculation Error: {e}")
+        st.error(f"⚠️ Calculation Engine Error: {e}")
         st.stop()
 
-    # --- Compute Per-Wall Itemized Costs & Data for Revit Actions ---
+    # Per-wall itemized cost aggregation
     for w in wall_details:
         w_bricks_cost = w.get("num_bricks", 0) * rate_brick
         w_cement_cost = (w.get("brick_mortar_cement_bags", 0.0) + w.get("plaster_cement_bags", 0.0)) * rate_cement
@@ -219,7 +217,7 @@ if active_json_path:
 
         w["total_wall_cost"] = round(w_bricks_cost + w_cement_cost + w_sand_cost + w_labor_brick + w_labor_plaster, 2)
 
-    # --- Trigger Revit Remote Actions ---
+    # --- Revit Remote Action Handlers ---
     if btn_heatmap:
         all_costs = [w["total_wall_cost"] for w in wall_details]
         min_c, max_c = min(all_costs), max(all_costs)
@@ -248,9 +246,9 @@ if active_json_path:
         ]
         send_revit_command("WRITE_PARAMETERS", {"wall_records": records})
 
-    # --- Main Dashboard Header ---
+    # --- Dashboard View ---
     st.title("🏗️ BIM Real-Time Quantity & Cost Estimator")
-    st.markdown(f"**Extracted Walls:** `{results['wall_count']} Elements` | **Calculations synced with latest Revit export**")
+    st.markdown(f"**Extracted Elements:** `{results.get('wall_count', len(wall_details))} Walls` | **Synced Model:** `{os.path.basename(active_json_path)}`")
 
     # Top KPI Metrics Row
     m1, m2, m3, m4 = st.columns(4)
@@ -265,7 +263,7 @@ if active_json_path:
 
     st.markdown("---")
 
-    # Charts Section
+    # Visualization Charts
     col_chart1, col_chart2 = st.columns(2)
 
     with col_chart1:
@@ -308,9 +306,8 @@ if active_json_path:
 
     st.markdown("---")
 
-    # Bill of Quantities (BOQ) Table
+    # Bill of Quantities (BOQ)
     st.subheader("📋 Bill of Quantities (BOQ)")
-
     boq_items = [
         {
             "Category": "Masonry Units",
@@ -388,4 +385,4 @@ if active_json_path:
         )
 
 else:
-    st.warning("Awaiting `model_data.json` inside the `data/` folder...")
+    st.warning("⚠️ Awaiting `model_data.json` inside the `data/` folder. Please export data from Revit or upload a JSON above.")
