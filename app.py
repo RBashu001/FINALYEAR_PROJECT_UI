@@ -128,7 +128,8 @@ if os.path.exists(DATA_PATH):
         st.sidebar.success("🚀 Heatmap command sent to Revit!")
 
     if btn_reset:
-        send_revit_command("RESET_VIEW", {})
+        all_wall_ids = [str(w["wall_id"]) for w in wall_details]
+        send_revit_command("RESET_VIEW", {"wall_ids": all_wall_ids})
         st.sidebar.info("🧹 Reset command sent to Revit!")
 
     if btn_push_params:
