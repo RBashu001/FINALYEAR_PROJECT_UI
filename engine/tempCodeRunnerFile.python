@@ -1,0 +1,281 @@
+import os
+import json
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+
+# Import your modular engine components
+from engine.models import (
+    BrickSpec,
+    MixRatio,
+    MaterialRates,
+    ProductivityRates,
+    EngineConfig,
+)
+from engine.main import run_engine
+
+# --- Page Configuration ---
+st.set_page_config(
+    page_title="BIM Quantity & Cost Estimator",
+    page_icon="🧱",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+DATA_PATH = os.path.join("data", "model_data.json")
+
+# --- Preset Configurations ---
+BRICK_PRESETS = {
+    "Modular Clay Brick": {"length": 190.0, "width": 90.0, "height": 90.0, "unit_cost": 9.0},
+    "Fly Ash Brick": {"length": 230.0, "width": 110.0, "height": 70.0, "unit_cost": 6.5},
+    "Concrete Block": {"length": 390.0, "width": 190.0, "height": 190.0, "unit_cost": 38.0},
+    "Custom": {"length": 230.0, "width": 115.0, "height": 75.0, "unit_cost": 8.0},
+}
+
+MIX_RATIOS = {
+    "1:3 (Rich Mortar)": (1, 3),
+    "1:4 (Standard Masonry/Plaster)": (1, 4),
+    "1:5 (Medium Mortar)": (1, 5),
+    "1:6 (General Brickwork)": (1, 6),
+}
+
+
+def parse_mix_ratio(ratio_tuple: tuple) -> MixRatio:
+    return MixRatio(cement=ratio_tuple[0], sand=ratio_tuple[1])
+
+
+# --- Sidebar: Input Controls ---
+with st.sidebar:
+    st.header("⚙️ Project Controls")
+    
+    # 1. Model Source
+    st.subheader("1. BIM Data Source")
+    uploaded_file = st.file_uploader("Upload Revit JSON (Optional)", type=["json"])
+    
+    active_json_path = None
+    if uploaded_file is not None:
+        # Save uploaded buffer temporarily
+        active_json_path = os.path.join("data", "uploaded_temp.json")
+        with open(active_json_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        st.success("Using uploaded JSON file.")
+    elif os.path.exists(DATA_PATH):
+        active_json_path = DATA_PATH
+        mtime = os.path.getmtime(DATA_PATH)
+        st.info(f"Connected to Revit output (`model_data.json`).")
+    else:
+        st.error("No JSON model found in `/data` or uploaded.")
+
+    st.markdown("---")
+
+    # 2. Material Specifications
+    st.subheader("2. Brick & Mortar Specs")
+    brick_type = st.selectbox("Brick Type", list(BRICK_PRESETS.keys()), index=1)
+    preset = BRICK_PRESETS[brick_type]
+
+    col_b1, col_b2, col_b3 = st.columns(3)
+    b_len = col_b1.number_input("Length (mm)", value=preset["length"], step=5.0)
+    b_wid = col_b2.number_input("Width (mm)", value=preset["width"], step=5.0)
+    b_hgt = col_b3.number_input("Height (mm)", value=preset["height"], step=5.0)
+
+    mortar_joint_mm = st.slider("Mortar Joint Thickness (mm)", min_value=6.0, max_value=20.0, value=10.0, step=1.0)
+    mortar_ratio_key = st.selectbox("Mortar Mix Ratio (Masonry)", list(MIX_RATIOS.keys()), index=3)
+
+    st.markdown("---")
+
+    # 3. Plastering Specs
+    st.subheader("3. Plastering Specs")
+    plaster_thick_mm = st.number_input("Plaster Thickness (mm)", min_value=6.0, max_value=30.0, value=12.0, step=1.0)
+    plaster_ratio_key = st.selectbox("Plaster Mix Ratio", list(MIX_RATIOS.keys()), index=1)
+
+    st.markdown("---")
+
+    # 4. Material Rates (₹)
+    st.subheader("4. Material Unit Rates (₹)")
+    rate_brick = st.number_input("Brick Rate (₹/unit)", min_value=1.0, value=float(preset["unit_cost"]), step=0.5)
+    rate_cement = st.number_input("Cement (₹/50kg bag)", min_value=100.0, value=420.0, step=10.0)
+    rate_sand = st.number_input("Sand (₹/m³)", min_value=100.0, value=1200.0, step=50.0)
+    rate_labor = st.number_input("Mason & Labor Team (₹/day)", min_value=500.0, value=1400.0, step=50.0)
+
+    st.markdown("---")
+
+    # 5. Productivity Rates
+    st.subheader("5. Productivity Rates")
+    mason_prod = st.number_input("Masonry Output (m³/day)", min_value=0.5, value=1.25, step=0.1)
+    plaster_prod = st.number_input("Plastering Output (m²/day)", min_value=1.0, value=8.0, step=0.5)
+
+
+# --- Calculation Trigger ---
+if active_json_path:
+    # Build Engine Configuration
+    config = EngineConfig(
+        brick_spec=BrickSpec(
+            length_m=b_len / 1000.0,
+            width_m=b_wid / 1000.0,
+            height_m=b_hgt / 1000.0,
+            joint_thickness_m=mortar_joint_mm / 1000.0,
+        ),
+        mortar_mix=parse_mix_ratio(MIX_RATIOS[mortar_ratio_key]),
+        plaster_mix=parse_mix_ratio(MIX_RATIOS[plaster_ratio_key]),
+        plaster_thickness_m=plaster_thick_mm / 1000.0,
+        rates=MaterialRates(
+            brick_rate=rate_brick,
+            cement_bag_rate=rate_cement,
+            sand_m3_rate=rate_sand,
+            labor_day_rate=rate_labor,
+        ),
+        productivity=ProductivityRates(
+            masonry_m3_per_day=mason_prod,
+            plaster_m2_per_day=plaster_prod,
+        ),
+    )
+
+    try:
+        # Run calculation engine
+        summary_results, wall_details = run_engine(active_json_path, config)
+    except Exception as e:
+        st.error(f"Calculation failed: {e}")
+        st.stop()
+
+    # --- UI Dashboard Main Panel ---
+    st.title("🏗️ BIM Quantity, Cost & Schedule Estimator")
+    st.caption("Synchronized with Revit Model Extraction Engine")
+
+    # 1. Top Metrics KPI Cards
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+    kpi1.metric(
+        label="Total Estimated Cost",
+        value=f"₹{summary_results['cost']:,.2f}",
+        help="Combined material + labor cost",
+    )
+    kpi2.metric(
+        label="Estimated Duration",
+        value=f"{int(summary_results['time_days']):,} Days",
+        help="Cumulative activity days based on productivity rates",
+    )
+    kpi3.metric(
+        label="Total Bricks / Blocks",
+        value=f"{int(summary_results['total_bricks']):,} units",
+    )
+    kpi4.metric(
+        label="Cement Required",
+        value=f"{summary_results['cement_bags']:,.1f} Bags",
+    )
+
+    st.markdown("---")
+
+    # 2. Charts Section
+    col_chart_left, col_chart_right = st.columns(2)
+
+    # Cost Breakdown Calculation for BOQ & Visualization
+    cost_bricks = summary_results["total_bricks"] * rate_brick
+    cost_cement = summary_results["cement_bags"] * rate_cement
+    cost_sand = summary_results["sand"] * rate_sand
+    cost_labor = summary_results["time_days"] * rate_labor
+
+    df_cost = pd.DataFrame(
+        {
+            "Cost Head": ["Bricks", "Cement", "Sand", "Labor"],
+            "Amount (INR)": [cost_bricks, cost_cement, cost_sand, cost_labor],
+        }
+    )
+
+    with col_chart_left:
+        st.subheader("💰 Cost Breakdown")
+        fig_cost = px.pie(
+            df_cost,
+            values="Amount (INR)",
+            names="Cost Head",
+            hole=0.45,
+            color_discrete_sequence=px.colors.qualitative.Prism,
+        )
+        fig_cost.update_traces(textposition="inside", textinfo="percent+label")
+        fig_cost.update_layout(showlegend=False, margin=dict(t=20, b=20, l=20, r=20))
+        st.plotly_chart(fig_cost, use_container_width=True)
+
+    with col_chart_right:
+        st.subheader("📦 Material Quantities")
+        df_quantities = pd.DataFrame(
+            {
+                "Material": ["Sand Volume (m³)", "Plaster Area (m² / 10)"],
+                "Quantity": [
+                    summary_results["sand"],
+                    summary_results["plaster_area"] / 10.0,
+                ],
+            }
+        )
+        fig_quant = px.bar(
+            df_quantities,
+            x="Material",
+            y="Quantity",
+            text="Quantity",
+            color="Material",
+            color_discrete_sequence=["#1f77b4", "#ff7f0e"],
+        )
+        fig_quant.update_traces(texttemplate="%{text:.2f}", textposition="outside")
+        fig_quant.update_layout(showlegend=False, margin=dict(t=20, b=20, l=20, r=20))
+        st.plotly_chart(fig_quant, use_container_width=True)
+
+    st.markdown("---")
+
+    # 3. Bill of Quantities (BOQ) Table
+    st.subheader("📋 Itemized Bill of Quantities (BOQ)")
+
+    boq_data = [
+        {
+            "Item No.": "1.0",
+            "Description": f"Supply of {brick_type} ({int(b_len)}x{int(b_wid)}x{int(b_hgt)} mm)",
+            "Quantity": summary_results["total_bricks"],
+            "Unit": "Nos",
+            "Unit Rate (₹)": rate_brick,
+            "Total Cost (₹)": cost_bricks,
+        },
+        {
+            "Item No.": "2.0",
+            "Description": "Ordinary Portland Cement (50kg bags)",
+            "Quantity": summary_results["cement_bags"],
+            "Unit": "Bags",
+            "Unit Rate (₹)": rate_cement,
+            "Total Cost (₹)": cost_cement,
+        },
+        {
+            "Item No.": "3.0",
+            "Description": "Fine Aggregate / Sand (Dry Clean)",
+            "Quantity": summary_results["sand"],
+            "Unit": "m³",
+            "Unit Rate (₹)": rate_sand,
+            "Total Cost (₹)": cost_sand,
+        },
+        {
+            "Item No.": "4.0",
+            "Description": "Masonry & Plastering Labor Component",
+            "Quantity": summary_results["time_days"],
+            "Unit": "Team-Days",
+            "Unit Rate (₹)": rate_labor,
+            "Total Cost (₹)": cost_labor,
+        },
+    ]
+
+    df_boq = pd.DataFrame(boq_data)
+
+    # Display clean formatted table
+    st.dataframe(
+        df_boq.style.format(
+            {
+                "Quantity": "{:,.2f}",
+                "Unit Rate (₹)": "₹{:,.2f}",
+                "Total Cost (₹)": "₹{:,.2f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # 4. Detailed Inspector Expander (Wall-by-Wall Audit)
+    if wall_details:
+        with st.expander("🔍 Wall-by-Wall Schedule & Verification"):
+            df_walls = pd.DataFrame(wall_details)
+            st.dataframe(df_walls, use_container_width=True)
+
+else:
+    st.info("👈 Please place `model_data.json` in the `data/` folder or upload a JSON model using the sidebar.")
