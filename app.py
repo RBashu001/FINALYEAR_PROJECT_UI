@@ -31,7 +31,7 @@ st.set_page_config(
 
 DATA_PATH = os.path.join(ROOT_DIR, "data", "model_data.json")
 COMMAND_PATH = os.path.join(ROOT_DIR, "data", "revit_command.json")
-
+STATUS_PATH = os.path.join(ROOT_DIR, "data", "revit_status.json")
 # --- Helper: Safe File Dispatcher for Revit Bridge ---
 def send_revit_command(action_type: str, data_payload: dict):
     os.makedirs(os.path.dirname(COMMAND_PATH), exist_ok=True)
@@ -129,7 +129,28 @@ with st.sidebar:
     btn_heatmap = col_r1.button("🔥 3D Heatmap")
     btn_reset = col_r2.button("🧹 Reset View")
     btn_push_params = st.button("📝 Push Quantities to Revit")
+# --- STATUS TRACKER ---
+    st.markdown("---")
+    st.subheader("📡 Revit Live Status")
 
+    if os.path.exists(STATUS_PATH):
+        try:
+            with open(STATUS_PATH, "r", encoding="utf-8") as f:
+                status_data = json.load(f)
+
+            if status_data.get("status") == "SUCCESS":
+                st.success(
+                    f"✅ **Revit Synced ({status_data.get('timestamp')})**\n\n"
+                    f"- **Action:** `{status_data.get('action')}`\n"
+                    f"- **View:** `{status_data.get('view_name')}`\n"
+                    f"- **Elements Updated:** `{status_data.get('elements_affected')}` walls"
+                )
+            else:
+                st.error(f"❌ Revit Error: {status_data.get('message')}")
+        except Exception:
+            pass
+    else:
+        st.caption("⏳ Waiting for Revit execution...")
 
 # --- Calculation & View Execution ---
 if active_json_path:
