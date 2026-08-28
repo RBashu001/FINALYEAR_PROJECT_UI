@@ -8,7 +8,7 @@ import plotly.express as px
 import streamlit as st
 
 # --- 1. Path Definitions & Directory Setup ---
-BASE_DIR = r"FINALYEAR_PROJECT_UI/data"
+BASE_DIR = r"E:/FINALYEAR_PROJECT_UI"
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
